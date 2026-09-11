@@ -1,0 +1,114 @@
+/*
+  Laboratorio - Control Proporcional con Referencia Periódica (Corregido)
+*/
+
+const int ENA_PIN = 25; 
+const int IN1_PIN = 26; 
+const int IN2_PIN = 27; 
+
+const int ENC_A = 32;   
+const int ENC_B = 33;   
+
+const float ENCODER_PPR = 11.0;  
+const float GEAR_RATIO  = 34.0;  
+const float COUNTS_PER_REV = ENCODER_PPR * GEAR_RATIO; 
+
+volatile long encoderCount = 0;
+unsigned long tiempo_inicio = 0; // Variable para sincronizar el tiempo
+
+void IRAM_ATTR isrEncoderA() {
+  if (digitalRead(ENC_B) == HIGH) {
+    encoderCount++;
+  } else {
+    encoderCount--;
+  }
+}
+
+float leerGrados() {
+  long currentCount = encoderCount;
+  return (currentCount / COUNTS_PER_REV) * 360.0;
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(ENC_A, INPUT_PULLUP);
+  pinMode(ENC_B, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(ENC_A), isrEncoderA, RISING);
+
+  pinMode(IN1_PIN, OUTPUT);
+  pinMode(IN2_PIN, OUTPUT);
+  
+  ledcAttach(ENA_PIN, 5000, 8);
+  
+  digitalWrite(IN1_PIN, LOW);
+  digitalWrite(IN2_PIN, LOW);
+  ledcWrite(ENA_PIN, 0);
+  
+  encoderCount = 0; 
+  
+  Serial.println("Tiempo(ms),Referencia(deg),Posicion(deg)");
+  
+  delay(2000); 
+  
+  // ¡CLAVE! Guardamos el tiempo exacto en el que terminan las pausas
+  tiempo_inicio = millis(); 
+}
+
+void loop() {
+  unsigned long t_actual = millis() - tiempo_inicio;
+  
+  // Ciclo de 6 segundos (6000 ms)
+  unsigned long t_ciclo = t_actual % 6000;
+  float referencia;
+  
+  if (t_ciclo <= 3000) {
+    referencia = 45.0;
+  } else {
+    referencia = -45.0;
+  }
+
+  float posicion = leerGrados();
+  float error = referencia - posicion; // Control P
+  float tolerancia = 2.0;
+
+  if (abs(error) > tolerancia) {
+    if (error > 0) {
+      digitalWrite(IN1_PIN, HIGH);
+      digitalWrite(IN2_PIN, LOW);
+    } else {
+      digitalWrite(IN1_PIN, LOW);
+      digitalWrite(IN2_PIN, HIGH);
+    }
+    
+    // 1. TOPAMOS el error máximo calculado a 45 grados para que no acelere de más
+    float errorMapeo = abs(error);
+    if (errorMapeo > 45.0) {
+      errorMapeo = 45.0;
+    }
+    
+    // 2. Reducimos la velocidad máxima permitida de 255 a 160.
+    // Esto garantiza que cruce tranquilo y logre frenar a tiempo.
+    int velocidad = map(errorMapeo, 0, 45, 90, 160); 
+    velocidad = constrain(velocidad, 90, 160);
+    
+    ledcWrite(ENA_PIN, velocidad);
+  } else {
+    digitalWrite(IN1_PIN, LOW);
+    digitalWrite(IN2_PIN, LOW);
+    ledcWrite(ENA_PIN, 0);
+  }
+
+  static unsigned long ultimaMuestra = 0;
+  if (t_actual - ultimaMuestra >= 50) {
+    Serial.print(t_actual);
+    Serial.print(",");
+    Serial.print(referencia);
+    Serial.print(",");
+    Serial.println(posicion);
+    ultimaMuestra = t_actual;
+  }
+  
+  // ¡PAUSA VITAL! 2 milisegundos para que el ESP32 no colapse y se vuelva loco
+  delay(2); 
+}
