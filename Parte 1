@@ -1,1 +1,120 @@
+/*
+  Laboratorio - Control de Posición (Freno Activo y Seguridad)
+*/
 
+const int ENA_PIN = 25; 
+const int IN1_PIN = 26; 
+const int IN2_PIN = 27; 
+
+const int ENC_A = 32;   
+const int ENC_B = 33;   
+
+const float ENCODER_PPR = 11.0;  
+const float GEAR_RATIO  = 34.0;  
+const float COUNTS_PER_REV = ENCODER_PPR * GEAR_RATIO; 
+
+volatile long encoderCount = 0;
+
+void IRAM_ATTR isrEncoderA() {
+  if (digitalRead(ENC_B) == HIGH) {
+    encoderCount++;
+  } else {
+    encoderCount--;
+  }
+}
+
+float leerGrados() {
+  long currentCount = encoderCount;
+  return (currentCount / COUNTS_PER_REV) * 360.0;
+}
+
+// --- MEJORA 1: Freno Electrónico Activo ---
+void detenerMotor() {
+  // 1. Aplicar freno de motor (Ambos IN en HIGH provocan frenado en seco)
+  digitalWrite(IN1_PIN, HIGH);
+  digitalWrite(IN2_PIN, HIGH);
+  ledcWrite(ENA_PIN, 255); // Máxima fuerza de frenado
+  delay(100);              // Mantener el freno 0.1 segundos para matar la inercia
+  
+  // 2. Liberar el motor y apagar
+  digitalWrite(IN1_PIN, LOW);
+  digitalWrite(IN2_PIN, LOW);
+  ledcWrite(ENA_PIN, 0); 
+}
+
+void irA(float anguloObjetivo) {
+  float error = anguloObjetivo - leerGrados(); //Control P
+  float tolerancia = 3.0; // Subimos la tolerancia ligeramente a 3 grados
+  unsigned long ultimoPrint = 0;
+  
+  // --- MEJORA 2: Sistema de seguridad (Timeout) ---
+  unsigned long tiempoInicio = millis();
+  const unsigned long TIEMPO_MAXIMO = 4000; // 4 segundos máximo para llegar
+  
+  while (abs(error) > tolerancia) {
+    
+    // Si han pasado más de 4 segundos y no llega, ¡Abortar!
+    if (millis() - tiempoInicio > TIEMPO_MAXIMO) {
+      Serial.println("¡ATENCIÓN! Motor atascado. Abortando movimiento.");
+      break; // Rompe el ciclo while y manda a detener el motor
+    }
+    
+    if (error > 0) {
+      digitalWrite(IN1_PIN, HIGH);
+      digitalWrite(IN2_PIN, LOW);
+    } else {
+      digitalWrite(IN1_PIN, LOW);
+      digitalWrite(IN2_PIN, HIGH);
+    }
+    
+    // Mapeo ajustado: Bajamos el mínimo a 60 para que se acerque más lento
+    int velocidad = map(abs(error), 0, 45, 60, 200); 
+    velocidad = constrain(velocidad, 60, 200); 
+    
+    ledcWrite(ENA_PIN, velocidad);
+    
+    error = anguloObjetivo - leerGrados();
+    
+    if (millis() - ultimoPrint > 100) {
+      Serial.print("Obj: ");
+      Serial.print(anguloObjetivo);
+      Serial.print(" | Act: ");
+      Serial.print(leerGrados());
+      Serial.print(" | PWM: ");
+      Serial.println(velocidad);
+      ultimoPrint = millis();
+    }
+    
+    delay(5); 
+  }
+  
+  detenerMotor();
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(ENC_A, INPUT_PULLUP);
+  pinMode(ENC_B, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(ENC_A), isrEncoderA, RISING);
+
+  pinMode(IN1_PIN, OUTPUT);
+  pinMode(IN2_PIN, OUTPUT);
+  ledcAttach(ENA_PIN, 5000, 8);
+  
+  detenerMotor();
+  encoderCount = 0; 
+  
+  Serial.println("Iniciando...");
+  delay(2000); 
+}
+
+void loop() {
+  Serial.println(">>> Yendo a 45 grados <<<");
+  irA(45.0);
+  delay(2000); 
+  
+  Serial.println(">>> Regresando a 0 grados <<<");
+  irA(0.0);
+  delay(2000); 
+}
